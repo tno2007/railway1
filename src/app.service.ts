@@ -4,15 +4,40 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DataSource, In } from 'typeorm';
 import { Index } from './entities/index.entity';
+import { Browser, chromium, LaunchOptions } from 'playwright';
+
+const options: LaunchOptions = {
+  headless: true,
+  slowMo: 100,
+  // set some args to make playwright behave more like a real browser
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-web-security',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--allow-insecure-localhost',
+  ],
+  ignoreDefaultArgs: ['--enable-automation'],
+};
+
+// create an array of user agents
+const userAgents = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+  'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:55.0) Gecko/20100101 Firefox/55.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+];
+
+const contextOptions = {
+  viewport: { width: 1280, height: 800 },
+  userAgent: userAgents[Math.floor(Math.random() * userAgents.length)],
+  deviceScaleFactor: 1,
+};
 
 @Injectable()
 export class AppService implements OnModuleInit, OnModuleDestroy {
-  constructor(private dataSource: DataSource) {
-    // Initialize the index data when the service is created
-    this.initializeIndexData()
-      .then(() => console.log('Index data initialized successfully'))
-      .catch((error) => console.error('Error initializing index data:', error));
-  }
+  private browser: Browser;
+
+  constructor(private dataSource: DataSource) {}
 
   initializeIndexData = async () => {
     // get data from file ~/src/data/indexes.json
@@ -56,8 +81,35 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     await indexRepository.save(indicesToCreateEntities);
   };
 
-  onModuleInit() {
+  // browser initialization
+  async scrape() {
+    if (!this.browser) {
+      this.browser = await chromium.launch(options);
+    }
+
+    const context = await this.browser.newContext(contextOptions);
+    const page = await context.newPage();
+
+    // Example of navigating to a page
+    await page.goto('https://example.com');
+
+    // Perform scraping tasks here...
+
+    // Close the page and context after scraping
+    await page.close();
+    await context.close();
+  }
+
+  async onModuleInit() {
     console.log('AppService initialized');
+
+    // Initialize the index data when the service is created
+    await this.initializeIndexData()
+      .then(() => console.log('Index data initialized successfully'))
+      .catch((error) => console.error('Error initializing index data:', error));
+
+    // Initialize the browser for scraping
+    await this.scrape();
   }
 
   onModuleDestroy() {
