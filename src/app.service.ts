@@ -100,7 +100,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     // Close the page and context after scraping
     await page.close();
     await context.close();
-    await this.browser.close();
+    // await this.browser.close();
 
     return content; // Return the scraped content or any other data you need
   }

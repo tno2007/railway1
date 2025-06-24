@@ -31,7 +31,7 @@ export class AppController {
   // scrape
   @Get('scrape')
   async scrape() {
-    await this.appService.scrape();
-    return { message: 'Scraping started' };
+    const content = await this.appService.scrape();
+    return { message: 'Scraping started... ' + content.length };
   }
 }
