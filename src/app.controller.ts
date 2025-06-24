@@ -32,6 +32,10 @@ export class AppController {
   @Get('scrape')
   async scrape() {
     const content = await this.appService.scrape();
-    return { message: 'Scraping started... ' + content.length };
+
+    // return the content as json
+    return {
+      content: content,
+    };
   }
 }
