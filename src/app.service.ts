@@ -109,7 +109,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       .catch((error) => console.error('Error initializing index data:', error));
 
     // Initialize the browser for scraping
-    await this.scrape();
+    // await this.scrape();
   }
 
   onModuleDestroy() {
