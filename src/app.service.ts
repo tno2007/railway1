@@ -91,13 +91,18 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const page = await context.newPage();
 
     // Example of navigating to a page
-    await page.goto('https://example.com');
+    await page.goto('https://example.com', {
+      waitUntil: 'domcontentloaded',
+    });
 
-    // Perform scraping tasks here...
+    const content = await page.content();
 
     // Close the page and context after scraping
     await page.close();
     await context.close();
+    await this.browser.close();
+
+    return content; // Return the scraped content or any other data you need
   }
 
   async onModuleInit() {
@@ -112,8 +117,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     await this.scrape();
   }
 
-  onModuleDestroy() {
+  async onModuleDestroy() {
     console.log('AppService destroyed');
+    if (this.browser) {
+      await this.browser.close();
+    }
   }
 
   getHello(): string {

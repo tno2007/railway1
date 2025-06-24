@@ -27,4 +27,11 @@ export class AppController {
       created: index.created,
     }));
   }
+
+  // scrape
+  @Get('scrape')
+  async scrape() {
+    await this.appService.scrape();
+    return { message: 'Scraping started' };
+  }
 }
