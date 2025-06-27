@@ -11,7 +11,13 @@ import { LogEntry } from './entities/logentry.entity';
 import { SymbolMapping } from './typings/SymbolMapping';
 import axios from 'axios';
 import { parse } from 'csv-parse/sync';
+import { parse as csvParse } from 'csv-parse';
 import * as cheerio from 'cheerio';
+import { Etf as EtfInterface } from './typings/Etf';
+import { Etf } from './entities/etf.entity';
+import { Cron } from './entities/cron.entity';
+import { YahooQuote } from './typings/YahooQuote';
+import { QuoteModule } from './helpers/modules/quote';
 
 const options: LaunchOptions = {
   headless: true,
@@ -44,7 +50,10 @@ const contextOptions = {
 export class AppService implements OnModuleInit, OnModuleDestroy {
   private browser: Browser;
 
-  constructor(private dataSource: DataSource) {}
+  constructor(
+    private dataSource: DataSource,
+    private quoteModule: QuoteModule,
+  ) {}
 
   async getStocksFromCsv(
     csvUrl: string,
@@ -158,6 +167,37 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
   }
+
+  runCron = async (cron: Cron) => {
+    // execute the task based on the cronName and methodName
+    // execute the method dynamically
+    const method = (this as any)[cron.method];
+    if (typeof method === 'function') {
+      console.log(`Running cron: ${cron.name} with method: ${cron.method}`);
+
+      await method.call(this);
+
+      // update cron table to set the last run date
+      const cronRepository = this.dataSource.getRepository(Cron);
+      const now = new Date();
+
+      await cronRepository.update(cron.id, {
+        lastRun: now.getTime(),
+        lastRunAt: now.toISOString(),
+      });
+      this.dataSource.getRepository(LogEntry).save({
+        level: 'info',
+        message: `Cron ${cron.name} completed successfully.`,
+        context: 'runCron',
+      });
+    } else {
+      this.dataSource.getRepository(LogEntry).save({
+        level: 'error',
+        message: `Method ${cron.method} not found for cron: ${cron.name}`,
+        context: 'runCron',
+      });
+    }
+  };
 
   initializeIndexData = async () => {
     // get data from file ~/src/data/indexes.json
@@ -293,6 +333,192 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
   };
 
+  initializeEtfData = async () => {
+    try {
+      const etfs: EtfInterface[] = [];
+
+      // read csv from file ~/src/data/etfs.csv line by line
+      // and do for each line:
+
+      fs.createReadStream(path.join('./src', 'data', 'etfs.csv'), {
+        encoding: 'utf-8',
+      })
+        .pipe(
+          csvParse({
+            columns: true,
+            skip_empty_lines: true,
+            trim: true,
+          }),
+        )
+        .on('data', (row: EtfInterface) => {
+          etfs.push(row);
+        })
+        .on('end', async () => {
+          // loop through each ETF and save it to the database
+          const etfRepository = this.dataSource.getRepository(Etf);
+          for (const etfData of etfs) {
+            // check if the ETF already exists in the database
+            const existingEtf = await etfRepository.findOne({
+              where: { symbol: etfData.symbol },
+            });
+
+            if (existingEtf) {
+              this.dataSource.getRepository(LogEntry).save({
+                level: 'info',
+                message: `ETF ${etfData.symbol} already exists in the database. Skipping.`,
+                context: 'initializeEtfData',
+              });
+              continue; // Skip to the next ETF if it already exists
+            }
+
+            // skip if the symbol is empty or contains spaces
+            if (!etfData.symbol || /\s/.test(etfData.symbol)) continue;
+
+            // skip if the symbol starts with ^
+            if (etfData.symbol.startsWith('^')) continue;
+
+            // skip if the symbol has a dot in it
+            if (etfData.symbol.includes('.')) continue;
+
+            console.log(
+              `Creating ETF entity for symbol: ${etfData.symbol} - ${etfData.name}`,
+            );
+
+            // create a new ETF entity, same as the EtfInterface
+            let etf = new Etf();
+            etf.symbol = etfData.symbol;
+            etf.name = etfData.name;
+            etf.currency = etfData.currency;
+            etf.summary = etfData.summary;
+            etf.category_group = etfData.category_group;
+            etf.category = etfData.category;
+            etf.family = etfData.family;
+            etf.exchange = etfData.exchange;
+
+            // save the ETF to the database
+            await etfRepository.save(etf);
+          }
+        })
+        .on('error', (err) => {
+          console.error('Error reading file:', err);
+        });
+
+      return etfs;
+    } catch (err) {
+      console.error(
+        'initializeEtfData - Failed to fetch or parse CSV:',
+        err.message,
+      );
+      return [];
+    }
+  };
+
+  // create func to get all tasks from settings table
+  initializeCronJobs = async () => {
+    // get cron jobs from crons.json file
+    const cronData: Cron[] = JSON.parse(
+      fs.readFileSync(path.join('./src', 'data', 'crons.json'), 'utf-8'),
+    );
+
+    // check if the crons already exist in the database
+    const existingCrons = await this.dataSource.getRepository(Cron).find({
+      where: { name: In(cronData.map((cron) => cron.name)) },
+    });
+
+    // filter the crons to only include the ones that do not exist in the database
+    const cronsToCreate = cronData.filter(
+      (cron) =>
+        !existingCrons.some((existingCron) => existingCron.name === cron.name),
+    );
+
+    // if there are no crons to create, return
+    if (cronsToCreate.length === 0) {
+      this.dataSource.getRepository(LogEntry).save({
+        level: 'info',
+        message: 'Cron jobs already initialized. No new crons to create.',
+        context: 'initializeCronJobs',
+      });
+      // return;
+    } else {
+      this.dataSource.getRepository(LogEntry).save({
+        level: 'info',
+        message: `Found ${cronsToCreate.length} new cron jobs to create.`,
+        context: 'initializeCronJobs',
+      });
+
+      // create the crons in the database
+      const cronRepository = this.dataSource.getRepository(Cron);
+      const cronEntities = cronsToCreate.map((cron) => {
+        const cronEntity = new Cron();
+        cronEntity.name = cron.name;
+        cronEntity.description = cron.description;
+        cronEntity.method = cron.method;
+        cronEntity.interval = cron.interval;
+        cronEntity.enabled = cron.enabled;
+
+        return cronEntity;
+      });
+
+      await cronRepository.save(cronEntities);
+    }
+
+    // find all crons in the database whose enabled is true
+    const cronRepository = this.dataSource.getRepository(Cron);
+    const crons = await cronRepository.find({
+      where: { enabled: true },
+      order: { id: 'ASC' }, // Order by id ascending
+    });
+
+    // use a foreach loop to iterate over the crons
+    // run them one by one and not in parallel
+    for (const cron of crons) {
+      console.log(
+        `Initializing cron job: ${cron.name} with method: ${cron.method}`,
+      );
+
+      // Run the task immediately
+      await this.runCron(cron);
+
+      // Set an interval to run the task every cron.interval minutes
+      setInterval(
+        async () => {
+          this.dataSource.getRepository(LogEntry).save({
+            level: 'info',
+            message: `Running scheduled task: ${cron.name}`,
+            context: 'initializeCronJobs',
+          });
+          await this.runCron(cron);
+        },
+        cron.interval * 60 * 1000,
+      ); // Convert minutes to milliseconds
+
+      // add 2 seconds delay before setting the interval
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  };
+
+  async getIndexQuotes(): Promise<YahooQuote[]> {
+    // get all indexes from the database
+    const indexes = await this.dataSource
+      .getRepository(Index)
+      .createQueryBuilder('index')
+      .getMany();
+
+    // loop each index and perform a quoteCombine for each index
+    const quotes: YahooQuote[] = [];
+
+    for (const index of indexes) {
+      console.log(`Fetching quote for index: ${index.symbol}`);
+      // sleep for 3 seconds to avoid hitting the API too quickly
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const quote = await this.quoteModule.quote(index.symbol);
+      console.log(`Quote for index ${index.symbol} fetched successfully.`);
+      quotes.push(quote);
+    }
+
+    return quotes;
+  }
+
   // browser initialization
   async scrape() {
     if (!this.browser) {
@@ -330,13 +556,13 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     await this.initializeIndexStockData();
     console.log('Index stock data initialized.');
 
-    // console.log('Initializing ETF data...');
-    // //await this.initializeEtfData();
-    // console.log('ETF data initialized.');
+    console.log('Initializing ETF data...');
+    await this.initializeEtfData();
+    console.log('ETF data initialized.');
 
-    // console.log('Initializing settings data...');
-    // //await this.initializeCronJobs();
-    // console.log('Cron jobs initialized.');
+    console.log('Initializing settings data...');
+    await this.initializeCronJobs();
+    console.log('Cron jobs initialized.');
   }
 
   async onModuleDestroy() {

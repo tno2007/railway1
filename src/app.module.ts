@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { QuoteModule } from './helpers/modules/quote';
 
 @Module({
   imports: [
@@ -16,7 +17,7 @@ import { DataSource } from 'typeorm';
     }),
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, QuoteModule],
 })
 export class AppModule {
   constructor(private dataSource: DataSource) {
