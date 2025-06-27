@@ -18,6 +18,9 @@ import { Etf } from './entities/etf.entity';
 import { Cron } from './entities/cron.entity';
 import { YahooQuote } from './typings/YahooQuote';
 import { QuoteModule } from './helpers/modules/quote';
+import { HistoryModule } from './helpers/modules/history';
+import { MarketMover } from './entities/marketMover.entity';
+import { extractStocks, getTopMovers } from './helpers/modules/movers';
 
 const options: LaunchOptions = {
   headless: true,
@@ -52,6 +55,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private dataSource: DataSource,
+    private historyModule: HistoryModule,
     private quoteModule: QuoteModule,
   ) {}
 
@@ -517,6 +521,140 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
 
     return quotes;
+  }
+
+  async getIndexHistory(): Promise<void> {
+    // get all indexes from the database
+    const indexes = await this.dataSource
+      .getRepository(Index)
+      .createQueryBuilder('index')
+      .getMany();
+
+    // loop through each index and fetch the history from the history table
+    for (const index of indexes) {
+      await this.historyModule.history(index.symbol);
+    }
+  }
+
+  async getIndexGainersAndLosers(symbol: string): Promise<object> {
+    // check if the index is valid
+    const indexRepository = this.dataSource.getRepository(Index);
+    const index = await indexRepository.findOne({
+      where: { symbol: symbol },
+    });
+
+    if (!index) {
+      throw new Error(`Index ${index} not found in the database.`);
+    }
+
+    // fetch the market movers from investing.com
+    const url = `https://za.investing.com/indices/${index.investingUrlName}`;
+
+    const context = await this.browser.newContext(contextOptions);
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    const content = await page.content();
+    await context.close(); // Close context when done
+
+    // load the content into cheerio
+    const $ = cheerio.load(content);
+
+    // extract json from script id="__NEXT_DATA__" tag
+    const json = $('#__NEXT_DATA__').text();
+
+    // parse the json and get the data from the props object
+    const data = JSON.parse(json);
+
+    const stocks = extractStocks(data);
+    const gainers = getTopMovers(stocks, 'Up');
+    const losers = getTopMovers(stocks, 'Down');
+
+    // return the GainersAndLosers object
+    return {
+      gainers: gainers,
+      losers: losers,
+    };
+  }
+
+  async getIndexMarketMoversXXX(): Promise<void> {
+    // get all indexes from the database
+    const indexes = await this.dataSource
+      .getRepository(Index)
+      .createQueryBuilder('index')
+      .getMany();
+
+    // loop through each index and fetch the market movers
+    for (const index of indexes) {
+      // check if the index has any market movers
+      const marketMoverRepository = this.dataSource.getRepository(MarketMover);
+      const existingMarketMovers = await marketMoverRepository.findOne({
+        where: { symbol: index.symbol },
+      });
+
+      let refetch = false;
+
+      // check if there are existing market movers
+      // if there are existing market movers, skip fetching them
+      // also check if the created date is not older than 4 hours, otherwise refetch the market movers
+      if (existingMarketMovers) {
+        const lastCreated = new Date(existingMarketMovers.created);
+        const now = new Date();
+        const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+
+        // if the last created date is older than 4 hours, refetch the market movers
+        if (lastCreated < fourHoursAgo) {
+          refetch = true;
+          this.dataSource.getRepository(LogEntry).save({
+            level: 'info',
+            message: `Market movers for index ${index.symbol} are older than 4 hours. Refetching.`,
+            context: 'getIndexMarketMovers',
+          });
+        } else {
+          this.dataSource.getRepository(LogEntry).save({
+            level: 'info',
+            message: `Market movers for index ${index.symbol} already exist and are up to date. Skipping.`,
+            context: 'getIndexMarketMovers',
+          });
+        }
+      } else {
+        refetch = true;
+        this.dataSource.getRepository(LogEntry).save({
+          level: 'info',
+          message: `No market movers found for index ${index.symbol}. Fetching new data.`,
+          context: 'getIndexMarketMovers',
+        });
+      }
+
+      // let GainersAndLosers: GainersAndLosers = {
+      //   gainers: [],
+      //   losers: [],
+      // };
+
+      if (refetch) {
+        //GainersAndLosers = await this.getIndexGainersAndLosers(index.symbol);
+        const gainersAndLosers = await this.getIndexGainersAndLosers(
+          index.symbol,
+        );
+
+        // delete all existing market movers for this index
+        await marketMoverRepository.delete({ symbol: index.symbol });
+
+        // save the market movers to the database
+        // save the GainersAndLosers to the json field of the MarketMover entity
+        const marketMover = new MarketMover();
+        marketMover.symbol = index.symbol;
+        marketMover.json = JSON.stringify(gainersAndLosers);
+        marketMover.created = new Date().getTime();
+        await marketMoverRepository.save(marketMover);
+        this.dataSource.getRepository(LogEntry).save({
+          level: 'info',
+          message: `Market movers for index ${index.symbol} saved successfully.`,
+          context: 'getIndexMarketMovers',
+        });
+      }
+    }
+
+    return; // Return void
   }
 
   // browser initialization
