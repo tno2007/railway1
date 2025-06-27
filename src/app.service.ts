@@ -358,6 +358,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           etfs.push(row);
         })
         .on('end', async () => {
+          console.log(`Found ${etfs.length} ETFs in the CSV file.`);
           // loop through each ETF and save it to the database
           const etfRepository = this.dataSource.getRepository(Etf);
           for (const etfData of etfs) {
@@ -383,10 +384,6 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
 
             // skip if the symbol has a dot in it
             if (etfData.symbol.includes('.')) continue;
-
-            console.log(
-              `Creating ETF entity for symbol: ${etfData.symbol} - ${etfData.name}`,
-            );
 
             // create a new ETF entity, same as the EtfInterface
             let etf = new Etf();
@@ -576,7 +573,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async getIndexMarketMoversXXX(): Promise<void> {
+  async getIndexMarketMovers(): Promise<void> {
     // get all indexes from the database
     const indexes = await this.dataSource
       .getRepository(Index)
@@ -609,12 +606,18 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             message: `Market movers for index ${index.symbol} are older than 4 hours. Refetching.`,
             context: 'getIndexMarketMovers',
           });
+          console.log(
+            `Market movers for index ${index.symbol} are older than 4 hours. Refetching.`,
+          );
         } else {
           this.dataSource.getRepository(LogEntry).save({
             level: 'info',
             message: `Market movers for index ${index.symbol} already exist and are up to date. Skipping.`,
             context: 'getIndexMarketMovers',
           });
+          console.log(
+            `Market movers for index ${index.symbol} already exist and are up to date. Skipping.`,
+          );
         }
       } else {
         refetch = true;
@@ -623,6 +626,9 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           message: `No market movers found for index ${index.symbol}. Fetching new data.`,
           context: 'getIndexMarketMovers',
         });
+        console.log(
+          `No market movers found for index ${index.symbol}. Fetching new data.`,
+        );
       }
 
       // let GainersAndLosers: GainersAndLosers = {
