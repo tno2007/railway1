@@ -21,6 +21,8 @@ import { QuoteModule } from './helpers/modules/quote';
 import { HistoryModule } from './helpers/modules/history';
 import { MarketMover } from './entities/marketMover.entity';
 import { extractStocks, getTopMovers } from './helpers/modules/movers';
+import yahooFinance from 'yahoo-finance2';
+import { News } from './entities/news.entity';
 
 const options: LaunchOptions = {
   headless: true,
@@ -661,6 +663,118 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     }
 
     return; // Return void
+  }
+
+  // function to get news for a specific index
+  async getIndexNews(): Promise<void> {
+    // get all indexes from the database
+    const indexes = await this.dataSource
+      .getRepository(Index)
+      .createQueryBuilder('index')
+      .getMany();
+
+    // loop through each index and fetch the news from news table
+    // const results = await yahooFinance.search(params.symbol);
+    for (const index of indexes) {
+      // get news for this index from the database
+      const newsRepository = this.dataSource.getRepository(News);
+      const existingNews = await newsRepository.findOne({
+        where: { symbol: index.symbol },
+      });
+
+      let refetch = false;
+
+      // check if there are existing news
+      // if there are existing news, skip fetching them
+      // also check if the created date is not older than 4 hours, otherwise refetch the news
+      if (existingNews) {
+        const lastCreated = new Date(); // new Date(existingNews.created);
+        const now = new Date();
+        const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+
+        // if the last created date is older than 4 hours, refetch the news
+        if (lastCreated < fourHoursAgo) {
+          refetch = true;
+          this.dataSource.getRepository(LogEntry).save({
+            level: 'info',
+            message: `News for index ${index.symbol} are older than 4 hours. Refetching.`,
+            context: 'getIndexNews',
+          });
+        } else {
+          this.dataSource.getRepository(LogEntry).save({
+            level: 'info',
+            message: `News for index ${index.symbol} already exist and are up to date. Skipping.`,
+            context: 'getIndexNews',
+          });
+        }
+      } else {
+        refetch = true;
+        this.dataSource.getRepository(LogEntry).save({
+          level: 'info',
+          message: `No news found for index ${index.symbol}. Fetching new data.`,
+          context: 'getIndexNews',
+        });
+      }
+
+      if (refetch) {
+        // fetch the news from Yahoo Finance
+        this.dataSource.getRepository(LogEntry).save({
+          level: 'info',
+          message: `Fetching news for index: ${index.symbol}`,
+          context: 'getIndexNews',
+        });
+
+        console.log(`Fetching news for index: ${index.symbol}`);
+        const result = await yahooFinance.search(index.symbol);
+
+        // first delete all existing news for this index
+        await newsRepository.delete({ symbol: index.symbol });
+
+        // save the news to the database
+        // use the result as the json field of the News entity
+        const news = new News();
+        news.symbol = index.symbol;
+        news.json = JSON.stringify(result);
+        news.created = new Date().getTime();
+        await newsRepository.save(news);
+
+        // log the success message
+        this.dataSource.getRepository(LogEntry).save({
+          level: 'info',
+          message: `News for index ${index.symbol} saved successfully.`,
+          context: 'getIndexNews',
+        });
+        console.log(`News for index ${index.symbol} saved successfully.`);
+      }
+    }
+  }
+
+  // Utility function to clean up LogEntry table, keeping only the last 100 entries
+  async cleanupLogEntries(): Promise<void> {
+    const logRepo = this.dataSource.getRepository(LogEntry);
+    // Get the ids of the last 100 entries (newest first)
+    const last100 = await logRepo.find({
+      order: { id: 'DESC' },
+      select: ['id'],
+      take: 100,
+    });
+    if (last100.length === 0) return;
+    const idsToKeep = last100.map((entry) => entry.id);
+    // Delete all entries not in the last 100
+    await logRepo
+      .createQueryBuilder()
+      .delete()
+      .where('id NOT IN (:...ids)', { ids: idsToKeep })
+      .execute();
+    // Optionally log the cleanup
+    await logRepo.save({
+      level: 'info',
+      message: `LogEntry cleanup: kept ${idsToKeep.length} entries, deleted older ones`,
+      context: 'cleanupLogEntries',
+    });
+    console.log(
+      `LogEntry cleanup: kept ${idsToKeep.length} entries, deleted older ones`,
+    );
   }
 
   // browser initialization
